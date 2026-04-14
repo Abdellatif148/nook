@@ -2,7 +2,6 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
-// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
     react(),
@@ -12,11 +11,12 @@ export default defineConfig({
       manifest: {
         name: 'Nook OS',
         short_name: 'Nook OS',
-        description: 'Café session management system for Morocco',
+        description: 'Gestion de café intelligente',
         theme_color: '#f97316',
-        background_color: '#080b12',
+        background_color: '#07090f',
         display: 'standalone',
-        orientation: 'portrait-primary',
+        orientation: 'portrait',
+        start_url: '/',
         icons: [
           {
             src: 'pwa-192x192.png',
@@ -34,16 +34,26 @@ export default defineConfig({
       workbox: {
         runtimeCaching: [
           {
-            urlPattern: /^https:\/\/.*\.supabase\.co\//,
+            urlPattern: /^https:\/\/api-nook\.up\.railway\.app\/.*/,
             handler: 'NetworkFirst',
             options: {
-              cacheName: 'supabase-cache',
-              networkTimeoutSeconds: 10
+              cacheName: 'api-cache',
+              networkTimeoutSeconds: 5,
+              expiration: {
+                maxEntries: 50,
+                maxAgeSeconds: 60 * 60 * 24 // 1 day
+              },
+              cacheableResponse: {
+                statuses: [0, 200]
+              }
             }
           },
           {
             urlPattern: /\.(?:js|css|png|jpg|svg|woff2)$/,
-            handler: 'CacheFirst'
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'static-assets'
+            }
           }
         ]
       }
