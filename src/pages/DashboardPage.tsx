@@ -1,178 +1,258 @@
-import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Plus, Clock, Users, BarChart3, AlertTriangle } from 'lucide-react';
-import { useAuthStore } from '../stores/authStore';
-import { useSessionStore } from '../stores/sessionStore';
-import { SessionCard } from '../components/sessions/SessionCard';
-import { AlertBanner } from '../components/layout/AlertBanner';
-import { formatDH, formatTime } from '../utils/formatters';
-import { getAllSessions } from '../db/sessions';
-import type { Session } from '../types';
+// @ts-nocheck
+import * as React from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { useNavigate } from 'react-router-dom'
+import { RefreshCw, Activity, Timer, CheckCircle, PlusCircle, List, Users, BarChart2, Clock } from 'lucide-react'
+import { useAuthStore } from '../stores/authStore'
+import { useSessionStore } from '../stores/sessionStore'
+import { useTranslation } from '../i18n'
+import { useRealtime } from '../hooks/useRealtime'
+import { SessionCard } from '../components/sessions/SessionCard'
+import { TopBar } from '../components/layout/TopBar'
+import { BottomNav } from '../components/layout/BottomNav'
+import { OfflineBanner } from '../components/layout/OfflineBanner'
+import { AlertBanner } from '../components/layout/AlertBanner'
+import { formatDH, formatTime } from '../utils/formatters'
+import { supabase } from '../lib/supabase'
+import type { Session } from '../types'
 
-export const DashboardPage: React.FC = () => {
-  const navigate = useNavigate();
-  const { user, settings } = useAuthStore();
-  const { activeSessions, loadActiveSessions } = useSessionStore();
-  const [completedToday, setCompletedToday] = React.useState<Session[]>([]);
-  const [now, setNow] = React.useState(new Date());
+const AnimatedNumber: React.FC<{ value: number }> = ({ value }) => {
+  const [displayValue, setDisplayValue] = React.useState(value)
 
   React.useEffect(() => {
-    if (user?.cafe_id) {
-      loadActiveSessions(user.cafe_id);
-      fetchCompletedToday(user.cafe_id);
+    let start = displayValue
+    const end = value
+    if (start === end) return
+
+    const duration = 800
+    const startTime = performance.now()
+
+    const update = (now: number) => {
+      const elapsed = now - startTime
+      const progress = Math.min(elapsed / duration, 1)
+      const current = start + (end - start) * progress
+      setDisplayValue(current)
+      if (progress < 1) requestAnimationFrame(update)
     }
-    const interval = setInterval(() => setNow(new Date()), 30000);
-    return () => clearInterval(interval);
-  }, [user, loadActiveSessions]);
+    requestAnimationFrame(update)
+  }, [value])
 
-  const fetchCompletedToday = async (cafeId: string) => {
-    const all = await getAllSessions(cafeId);
-    const today = new Date().toISOString().split('T')[0];
-    const filtered = all
-      .filter(s => s.status === 'completed' && s.ended_at?.startsWith(today))
-      .sort((a, b) => new Date(b.ended_at!).getTime() - new Date(a.ended_at!).getTime());
-    setCompletedToday(filtered);
-  };
+  return <span>{displayValue.toFixed(2)}</span>
+}
 
-  const revenueToday = completedToday.reduce((acc, s) => acc + s.total_amount, 0);
-  const activeCount = activeSessions.length;
-  const completedCount = completedToday.length;
+export const DashboardPage: React.FC = () => {
+  const navigate = useNavigate()
+  const { t } = useTranslation()
+  const { cafe, type, staff } = useAuthStore()
+  const { activeSessions } = useSessionStore()
+  const [completedToday, setCompletedToday] = React.useState<Session[]>([])
+  const [isRefreshing, setIsRefreshing] = React.useState(false)
 
-  const longSession = activeSessions.find(s => {
-    if (!settings) return false;
-    const start = new Date(s.started_at).getTime();
-    const diff = (Date.now() - start) / 3600000;
-    return diff > settings.long_session_alert_hours;
-  });
+  useRealtime()
+
+  const fetchTodayStats = React.useCallback(async () => {
+    if (!cafe) return
+    setIsRefreshing(true)
+    const today = new Date().toISOString().split('T')[0]
+
+    const { data } = await supabase
+      .from('sessions')
+      .select('*')
+      .eq('cafe_id', cafe.id)
+      .eq('status', 'completed')
+      .gte('ended_at', `${today}T00:00:00`)
+      .order('ended_at', { ascending: false })
+
+    if (data) setCompletedToday(data as Session[])
+    setIsRefreshing(false)
+  }, [cafe])
+
+  React.useEffect(() => {
+    fetchTodayStats()
+  }, [fetchTodayStats])
+
+  const totalRevenue = completedToday.reduce((acc, s) => acc + (s.total_amount || 0), 0)
+
+  const alerts = React.useMemo(() => {
+    const list: string[] = []
+    const limit = (cafe?.long_session_alert_hours || 3) * 60 * 60 * 1000
+    activeSessions.forEach(s => {
+      const start = new Date(s.started_at).getTime()
+      if (Date.now() - start > limit) {
+        list.push(`Session longue: Place ${s.seat_number} (${s.customer_name})`)
+      }
+    })
+    return list
+  }, [activeSessions, cafe])
+
+  const hasPermission = (perm: 'clients' | 'reports') => {
+    if (type === 'owner') return true
+    return (staff?.permissions as any)?.[perm]
+  }
 
   return (
-    <div className="p-4 space-y-6">
-      <AlertBanner
-        message={longSession ? `Session longue: Place ${longSession.seat_number} (${longSession.customer_name})` : null}
-      />
+    <div className="min-h-screen pb-24">
+      <OfflineBanner />
+      <AlertBanner alerts={alerts} />
 
-      {/* SECTION A — TODAY SUMMARY */}
-      <div className="bg-gradient-to-br from-accent/15 to-accent/5 border border-accent/25 rounded-[14px] p-5">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[11px] font-bold text-accent2 uppercase tracking-wider">Aujourd'hui</span>
-          <span className="text-[12px] font-mono text-text2">{formatTime(now)}</span>
-        </div>
-
-        <div className="text-[36px] font-mono font-extrabold text-text mb-4">
-          {formatDH(revenueToday)}
-        </div>
-
-        <div className="flex gap-2">
-          <div className="px-3 py-1 bg-green-dim border border-green/20 rounded-badge text-[11px] font-bold text-green">
-            {activeCount + completedCount} sessions
-          </div>
-          <div className="px-3 py-1 bg-accent-dim border border-accent/20 rounded-badge text-[11px] font-bold text-accent">
-            {activeCount} actives
-          </div>
-          <div className="px-3 py-1 bg-border2 rounded-badge text-[11px] font-bold text-text2">
-            {completedCount} clôturées
-          </div>
-        </div>
-      </div>
-
-      {/* SECTION B — ACTIVE SESSIONS */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-[15px] font-bold text-text">Sessions actives</h2>
-          <div className="px-2 py-0.5 bg-accent text-white text-[10px] font-bold rounded-full">
-            {activeCount}
-          </div>
-        </div>
-
-        {activeCount > 0 ? (
-          <div className="space-y-3">
-            {activeSessions.map(session => (
-              <SessionCard
-                key={session.id}
-                session={session}
-                onEnd={(s) => navigate(`/sessions/${s.id}`)}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="bg-card border border-border rounded-card p-8 flex flex-col items-center justify-center text-center space-y-4">
-            <Clock className="w-8 h-8 text-text3" />
-            <p className="text-[14px] text-text2">Aucune session active</p>
+      <main className="p-4 space-y-6">
+        {/* REVENUE CARD */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="relative overflow-hidden bg-gradient-to-br from-accent/15 to-accent/5 border border-accent-border rounded-2xl p-5 shadow-sm"
+        >
+          <div className="flex justify-between items-center mb-3">
+            <span className="text-[11px] font-bold text-accent2 uppercase tracking-[0.08em]">
+              {t('dashboard.today')}
+            </span>
             <button
-              onClick={() => navigate('/sessions/new')}
-              className="w-full h-11 bg-accent text-white font-bold rounded-button"
+              onClick={fetchTodayStats}
+              className={`p-1.5 text-accent2 hover:bg-accent-glow rounded-full transition-all ${isRefreshing ? 'animate-spin' : ''}`}
             >
-              + Démarrer une session
+              <RefreshCw className="w-4 h-4" />
             </button>
           </div>
-        )}
-      </div>
 
-      {/* SECTION C — QUICK ACTIONS */}
-      <div className="space-y-3">
-        <h2 className="text-[15px] font-bold text-text">Actions rapides</h2>
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            onClick={() => navigate('/sessions/new')}
-            className="h-[72px] bg-accent-dim border border-accent/30 rounded-card flex flex-col items-center justify-center gap-1 text-accent2"
-          >
-            <Plus className="w-6 h-6" />
-            <span className="text-[12px] font-bold">Nouvelle session</span>
-          </button>
-          <button
-            onClick={() => navigate('/sessions/history')}
-            className="h-[72px] bg-card border border-border rounded-card flex flex-col items-center justify-center gap-1 text-text"
-          >
-            <Clock className="w-6 h-6 text-text2" />
-            <span className="text-[12px] font-bold">Historique</span>
-          </button>
-          <button
-            onClick={() => navigate('/clients')}
-            className="h-[72px] bg-card border border-border rounded-card flex flex-col items-center justify-center gap-1 text-text"
-          >
-            <Users className="w-6 h-6 text-text2" />
-            <span className="text-[12px] font-bold">Clients</span>
-          </button>
-          <button
-            onClick={() => navigate('/reports')}
-            className="h-[72px] bg-card border border-border rounded-card flex flex-col items-center justify-center gap-1 text-text"
-          >
-            <BarChart3 className="w-6 h-6 text-text2" />
-            <span className="text-[12px] font-bold">Rapport</span>
-          </button>
-        </div>
-      </div>
+          <div className="flex items-baseline gap-2 mb-5">
+            <div className="text-[38px] font-mono font-extrabold text-text tracking-tight">
+              <AnimatedNumber value={totalRevenue} />
+            </div>
+            <span className="text-lg font-bold text-text3 font-mono">DH</span>
+          </div>
 
-      {/* SECTION D — LAST COMPLETED */}
-      <div className="space-y-3">
-        <h2 className="text-[15px] font-bold text-text">Dernières sessions</h2>
-        <div className="space-y-2">
-          {completedToday.length > 0 ? (
-            completedToday.slice(0, 5).map(session => (
-              <div key={session.id} className="flex items-center justify-between p-1">
-                <div className="flex items-center gap-3">
-                  <span className="text-[12px] font-mono text-text2">{formatTime(session.ended_at!)}</span>
-                  <div className="space-y-0.5">
-                    <p className="text-[13px] font-medium text-text">Place {session.seat_number} — {session.customer_name}</p>
-                    <p className="text-[11px] text-text3">{session.duration_minutes} min</p>
+          <div className="flex flex-wrap gap-2">
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-surface2/50 border border-border rounded-full text-[11px] font-bold text-text2">
+              <Activity className="w-3.5 h-3.5" />
+              {activeSessions.length + completedToday.length} sessions
+            </div>
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-accent-glow border border-accent-border rounded-full text-[11px] font-bold text-accent2">
+              <Timer className="w-3.5 h-3.5" />
+              {activeSessions.length} actives
+            </div>
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-success-dim border border-success/20 rounded-full text-[11px] font-bold text-success">
+              <CheckCircle className="w-3.5 h-3.5" />
+              {completedToday.length} clôturées
+            </div>
+          </div>
+        </motion.div>
+
+        {/* ACTIVE SESSIONS */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <h2 className="text-[15px] font-bold text-text flex items-center gap-2">
+              {t('dashboard.active_sessions')}
+              <span className="px-2 py-0.5 bg-accent text-white text-[10px] font-black rounded-full shadow-[0_0_8px_rgba(249,115,22,0.3)]">
+                {activeSessions.length}
+              </span>
+            </h2>
+          </div>
+
+          {activeSessions.length === 0 ? (
+            <div className="bg-surface border border-border rounded-xl p-10 flex flex-col items-center justify-center text-center space-y-4 shadow-sm">
+              <div className="w-12 h-12 rounded-full bg-surface2 flex items-center justify-center text-text3">
+                <Clock className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <p className="font-bold text-text">{t('dashboard.no_active')}</p>
+                <p className="text-[13px] text-text3 px-4">Démarrez une session pour commencer à facturer le temps</p>
+              </div>
+              <button
+                onClick={() => navigate('/sessions/new')}
+                className="px-6 py-2.5 bg-accent text-white font-bold rounded-lg shadow-lg shadow-accent/20 active:scale-95 transition-all text-sm"
+              >
+                + {t('dashboard.new_session')}
+              </button>
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              <AnimatePresence mode="popLayout">
+                {activeSessions.map(session => (
+                  <SessionCard
+                    key={session.id}
+                    session={session}
+                    onClick={(s) => navigate(`/sessions/${s.id}`)}
+                    onEnd={(s) => navigate(`/sessions/${s.id}`)}
+                  />
+                ))}
+              </AnimatePresence>
+            </div>
+          )}
+        </section>
+
+        {/* QUICK ACTIONS */}
+        <section className="space-y-4 pt-2">
+          <h2 className="text-[15px] font-bold text-text px-1">{t('dashboard.quick_actions')}</h2>
+          <div className="grid grid-cols-2 gap-3">
+            <motion.button
+              whileTap={{ scale: 0.96 }}
+              onClick={() => navigate('/sessions/new')}
+              className="h-[76px] flex flex-col items-center justify-center gap-2 bg-accent-glow border border-accent-border rounded-xl shadow-sm group"
+            >
+              <PlusCircle className="w-6 h-6 text-accent2 group-hover:scale-110 transition-transform" />
+              <span className="text-[13px] font-bold text-accent2">{t('dashboard.new_session')}</span>
+            </motion.button>
+
+            <motion.button
+              whileTap={{ scale: 0.96 }}
+              onClick={() => navigate('/sessions')}
+              className="h-[76px] flex flex-col items-center justify-center gap-2 bg-surface border border-border rounded-xl shadow-sm group"
+            >
+              <List className="w-6 h-6 text-text2 group-hover:scale-110 transition-transform" />
+              <span className="text-[13px] font-bold text-text">{t('dashboard.history')}</span>
+            </motion.button>
+
+            {hasPermission('clients') && (
+              <motion.button
+                whileTap={{ scale: 0.96 }}
+                onClick={() => navigate('/clients')}
+                className="h-[76px] flex flex-col items-center justify-center gap-2 bg-surface border border-border rounded-xl shadow-sm group"
+              >
+                <Users className="w-6 h-6 text-text2 group-hover:scale-110 transition-transform" />
+                <span className="text-[13px] font-bold text-text">{t('nav.clients')}</span>
+              </motion.button>
+            )}
+
+            {hasPermission('reports') && (
+              <motion.button
+                whileTap={{ scale: 0.96 }}
+                onClick={() => navigate('/reports')}
+                className="h-[76px] flex flex-col items-center justify-center gap-2 bg-surface border border-border rounded-xl shadow-sm group"
+              >
+                <BarChart2 className="w-6 h-6 text-text2 group-hover:scale-110 transition-transform" />
+                <span className="text-[13px] font-bold text-text">{t('nav.reports')}</span>
+              </motion.button>
+            )}
+          </div>
+        </section>
+
+        {/* LAST SESSIONS */}
+        <section className="space-y-4 pt-2">
+          <h2 className="text-[15px] font-bold text-text px-1">{t('dashboard.last_sessions')}</h2>
+          <div className="bg-surface border border-border rounded-xl overflow-hidden shadow-sm divide-y divide-border/50">
+            {completedToday.length > 0 ? (
+              completedToday.slice(0, 5).map(session => (
+                <div key={session.id} className="flex items-center justify-between p-4 active:bg-white/5 transition-colors cursor-pointer" onClick={() => navigate(`/sessions/${session.id}`)}>
+                  <div className="flex items-center gap-4">
+                    <div className="text-[12px] font-mono text-text3 bg-surface2 px-2 py-1 rounded">
+                      {formatTime(session.ended_at!)}
+                    </div>
+                    <div className="space-y-0.5">
+                      <p className="text-[13px] font-bold text-text">Place {session.seat_number} — {session.customer_name}</p>
+                      <p className="text-[11px] text-text3">{session.duration_minutes} min • {session.payment_method === 'cash' ? 'Espèces' : session.payment_method === 'card' ? 'Carte' : session.payment_method === 'account' ? 'Compte' : 'Offert'}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[14px] font-mono font-bold text-text">{formatDH(session.total_amount || 0)}</p>
                   </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-[13px] font-mono font-bold text-text">{formatDH(session.total_amount)}</p>
-                  <span className="text-[12px]">
-                    {session.payment_method === 'cash' && '💵'}
-                    {session.payment_method === 'card' && '💳'}
-                    {session.payment_method === 'account' && '👤'}
-                    {session.payment_method === 'free' && '🎁'}
-                  </span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <p className="text-[13px] text-text3 text-center py-4">Aucune session clôturée aujourd'hui</p>
-          )}
-        </div>
-      </div>
+              ))
+            ) : (
+              <p className="p-8 text-center text-text3 text-[13px]">Aucune session clôturée aujourd'hui</p>
+            )}
+          </div>
+        </section>
+      </main>
     </div>
-  );
-};
+  )
+}

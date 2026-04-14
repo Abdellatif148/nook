@@ -1,47 +1,28 @@
-import { create } from 'zustand';
-import type { User, CafeSettings } from '../types';
+import { create } from 'zustand'
+import type { User } from '@supabase/supabase-js'
+import type { Cafe, Staff, AuthType } from '../types'
 
 interface AuthState {
-  token: string | null;
-  user: User | null;
-  settings: CafeSettings | null;
-  isLoading: boolean;
-  setAuth: (token: string, user: User, settings: CafeSettings) => void;
-  updateSettings: (settings: CafeSettings) => void;
-  logout: () => void;
-  init: () => void;
+  type: AuthType
+  owner: User | null
+  staff: Staff | null
+  cafe: Cafe | null
+  isLoading: boolean
+  setAuth: (type: AuthType, owner: User | null, staff: Staff | null, cafe: Cafe | null) => void
+  setCafe: (cafe: Cafe) => void
+  logout: () => void
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
-  token: null,
-  user: null,
-  settings: null,
+  type: null,
+  owner: null,
+  staff: null,
+  cafe: null,
   isLoading: true,
-  setAuth: (token, user, settings) => {
-    localStorage.setItem('nook_token', token);
-    localStorage.setItem('nook_user', JSON.stringify(user));
-    set({ token, user, settings, isLoading: false });
-  },
-  updateSettings: (settings) => set({ settings }),
+  setAuth: (type, owner, staff, cafe) => set({ type, owner, staff, cafe, isLoading: false }),
+  setCafe: (cafe) => set({ cafe }),
   logout: () => {
-    localStorage.removeItem('nook_token');
-    localStorage.removeItem('nook_user');
-    set({ token: null, user: null, settings: null, isLoading: false });
-  },
-  init: () => {
-    const token = localStorage.getItem('nook_token');
-    const userStr = localStorage.getItem('nook_user');
-    if (token && userStr) {
-      try {
-        const user = JSON.parse(userStr);
-        set({ token, user, isLoading: false });
-      } catch {
-        localStorage.removeItem('nook_token');
-        localStorage.removeItem('nook_user');
-        set({ token: null, user: null, isLoading: false });
-      }
-    } else {
-      set({ isLoading: false });
-    }
-  },
-}));
+    localStorage.removeItem('nook_staff_session')
+    set({ type: null, owner: null, staff: null, cafe: null, isLoading: false })
+  }
+}))

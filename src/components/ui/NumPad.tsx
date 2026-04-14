@@ -1,50 +1,54 @@
 import * as React from 'react'
 import { motion } from 'framer-motion'
 import { Delete, Check } from 'lucide-react'
-import { cn } from '../../utils/cn'
 
 interface NumPadProps {
-  onInput: (val: string) => void
+  onInput: (digit: string) => void
   onDelete: () => void
   onConfirm?: () => void
   showConfirm?: boolean
-  className?: string
 }
 
-export const NumPad: React.FC<NumPadProps> = ({ onInput, onDelete, onConfirm, showConfirm, className }) => {
+export const NumPad: React.FC<NumPadProps> = ({ onInput, onDelete, onConfirm, showConfirm }) => {
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
 
   return (
-    <div className={cn("grid grid-cols-3 gap-3 max-w-[320px] mx-auto", className)}>
+    <div className="grid grid-cols-3 gap-2.5 w-full max-w-[280px] mx-auto">
       {keys.map((key) => (
-        <NumKey key={key} onClick={() => onInput(key)}>
+        <motion.button
+          key={key}
+          whileTap={{ scale: 0.92 }}
+          onClick={() => onInput(key)}
+          className="h-14 flex items-center justify-center bg-surface2 border border-border rounded-lg text-lg font-bold text-text hover:bg-surface2/80 transition-colors"
+        >
           {key}
-        </NumKey>
+        </motion.button>
       ))}
-      <NumKey onClick={onDelete}>
-        <Delete className="w-5 h-5 text-text2" />
-      </NumKey>
-      <NumKey onClick={() => onInput('0')}>0</NumKey>
+      <motion.button
+        whileTap={{ scale: 0.92 }}
+        onClick={onDelete}
+        className="h-14 flex items-center justify-center bg-surface2 border border-border rounded-lg text-text3 hover:text-text hover:bg-surface2/80 transition-colors"
+      >
+        <Delete className="w-5 h-5" />
+      </motion.button>
+      <motion.button
+        whileTap={{ scale: 0.92 }}
+        onClick={() => onInput('0')}
+        className="h-14 flex items-center justify-center bg-surface2 border border-border rounded-lg text-lg font-bold text-text hover:bg-surface2/80 transition-colors"
+      >
+        0
+      </motion.button>
       {showConfirm ? (
-        <NumKey onClick={onConfirm || (() => {})} className="bg-success-dim border-success/20">
-          <Check className="w-5 h-5 text-success" />
-        </NumKey>
+        <motion.button
+          whileTap={{ scale: 0.92 }}
+          onClick={onConfirm}
+          className="h-14 flex items-center justify-center bg-success-dim border border-success/30 rounded-lg text-success hover:bg-success-dim/80 transition-colors"
+        >
+          <Check className="w-5 h-5" />
+        </motion.button>
       ) : (
-        <div />
+        <div className="h-14" />
       )}
     </div>
   )
 }
-
-const NumKey: React.FC<{ children: React.ReactNode; onClick: () => void; className?: string }> = ({ children, onClick, className }) => (
-  <motion.button
-    whileTap={{ scale: 0.92 }}
-    onClick={onClick}
-    className={cn(
-      "h-14 bg-surface2 border border-border rounded-btn flex items-center justify-center text-xl font-mono font-bold text-text hover:bg-accent-glow hover:border-accent-border transition-colors",
-      className
-    )}
-  >
-    {children}
-  </motion.button>
-)
