@@ -1,278 +1,285 @@
-// @ts-nocheck
-import * as React from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { useNavigate } from 'react-router-dom'
-import { X, User, Phone, Armchair, Clock, Zap, Sliders, MessageSquare, Play, Loader2, ChevronDown, CheckCircle } from 'lucide-react'
-import { supabase } from '../lib/supabase'
-import { useAuthStore } from '../stores/authStore'
-import { useSessionStore } from '../stores/sessionStore'
-import { useUIStore } from '../stores/uiStore'
-import { useTranslation } from '../i18n'
-import { Button } from '../components/ui/Button'
-import { Input } from '../components/ui/Input'
-import { cn } from '../utils/cn'
+import * as React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, X, Loader2 } from 'lucide-react';
+import { useAuthStore } from '../stores/authStore';
+import { useSessionStore } from '../stores/sessionStore';
+import { useUIStore } from '../stores/uiStore';
+import { saveSession } from '../db/sessions';
+import { addToSyncQueue } from '../db/syncQueue';
+import { addAuditLog } from "../db/auditLog";
+import { getAllSessions } from '../db/sessions';
+import { formatTime } from '../utils/formatters';
+import type { Session } from '../types';
 
 export const NewSessionPage: React.FC = () => {
-  const navigate = useNavigate()
-  const { cafe, staff, type } = useAuthStore()
-  const { activeSessions } = useSessionStore()
-  const { addToast } = useUIStore()
-  const { t } = useTranslation()
+  const navigate = useNavigate();
+  const { user, settings } = useAuthStore();
+  const { addActiveSession } = useSessionStore();
+  const { addToast } = useUIStore();
 
-  const [customerName, setCustomerName] = React.useState('')
-  const [customerPhone, setCustomerPhone] = React.useState('')
-  const [selectedSeat, setSelectedSeat] = React.useState<number | null>(null)
-  const [rateType, setRateType] = React.useState<'standard' | 'premium' | 'custom'>('standard')
-  const [customRate, setCustomRate] = React.useState(cafe?.default_rate || 2.00)
-  const [notes, setNotes] = React.useState('')
-  const [isNoteOpen, setIsNoteOpen] = React.useState(false)
-  const [isLoading, setIsLoading] = React.useState(false)
-  const [recentCustomers, setRecentCustomers] = React.useState<string[]>([])
+  const [customerName, setCustomerName] = React.useState('');
+  const [customerPhone, setCustomerPhone] = React.useState('');
+  const [selectedSeat, setSelectedSeat] = React.useState<number | null>(null);
+  const [rateType, setRateType] = React.useState<'standard' | 'premium' | 'custom'>('standard');
+  const [customRate, setCustomRate] = React.useState<number>(0);
+  const [note, setNote] = React.useState('');
+  const [occupiedSeats, setOccupiedSeats] = React.useState<Set<number>>(new Set());
+  const [isSaving, setIsSaving] = React.useState(false);
+  const [recentClients, setRecentClients] = React.useState<string[]>([]);
 
   React.useEffect(() => {
-    if (!cafe?.id) return
-    supabase
-      .from('sessions')
-      .select('customer_name')
-      .eq('cafe_id', cafe.id)
-      .order('created_at', { ascending: false })
-      .limit(20)
-      .then(({ data }) => {
-        if (data) {
-          const unique = Array.from(new Set(data.map(d => d.customer_name))).slice(0, 6)
-          setRecentCustomers(unique)
-        }
-      })
-  }, [cafe?.id])
+    if (user?.cafe_id) {
+      fetchOccupied(user.cafe_id);
+      fetchRecentClients(user.cafe_id);
+    }
+  }, [user]);
 
-  const handleStartSession = async () => {
-    if (!cafe?.id || !selectedSeat || !customerName) return
+  const fetchOccupied = async (cafeId: string) => {
+    const all = await getAllSessions(cafeId);
+    const occupied = new Set(all.filter(s => s.status === 'active').map(s => s.seat_number));
+    setOccupiedSeats(occupied);
+  };
 
-    // Re-check if seat is occupied
-    const isOccupied = activeSessions.some(s => s.seat_number === selectedSeat)
-    if (isOccupied) {
-      addToast({ type: 'error', message: 'Cette place est déjà occupée' })
-      return
+  const fetchRecentClients = async (cafeId: string) => {
+    const all = await getAllSessions(cafeId);
+    const names = Array.from(new Set(all.map(s => s.customer_name))).slice(0, 5);
+    setRecentClients(names);
+  };
+
+  const handleStart = async () => {
+    if (!user || !selectedSeat || !customerName) return;
+    if (occupiedSeats.has(selectedSeat)) {
+      addToast({ type: 'error', message: `La place ${selectedSeat} est déjà occupée.` });
+      return;
     }
 
-    setIsLoading(true)
-    const rate = rateType === 'standard' ? cafe.default_rate : rateType === 'premium' ? cafe.premium_rate : customRate
+    setIsSaving(true);
+    const rate = rateType === 'standard' ? (settings?.default_rate || 2)
+               : rateType === 'premium' ? (settings?.premium_rate || 3)
+               : customRate;
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    const session: Session = {
+      id,
+      local_id: id,
+      cafe_id: user.cafe_id,
+      customer_name: customerName.trim(),
+      customer_phone: customerPhone.trim() || undefined,
+      seat_number: selectedSeat,
+      rate_per_hour: rate,
+      started_at: now,
+      extras: [],
+      extras_total: 0,
+      total_amount: 0,
+      status: 'active',
+      created_by: user.id,
+      synced: false,
+      created_at: now,
+      updated_at: now
+    };
 
     try {
-      const { data, error } = await supabase
-        .from('sessions')
-        .insert({
-          cafe_id: cafe.id,
-          staff_id: type === 'staff' ? staff?.id : null,
-          customer_name: customerName,
-          customer_phone: customerPhone,
-          seat_number: selectedSeat,
-          rate_per_hour: rate,
-          notes: notes,
-          status: 'active'
-        })
-        .select()
-        .single()
-
-      if (error) throw error
-
-      addToast({ type: 'success', message: `Session démarrée — Place ${selectedSeat}` })
-      navigate('/dashboard')
-    } catch (err: any) {
-      addToast({ type: 'error', message: err.message })
+      await saveSession(session);
+      await addToSyncQueue({
+        id: crypto.randomUUID(),
+        type: 'create_session',
+        payload: session,
+        retry_count: 0,
+        created_at: now
+      });
+      await addAuditLog(user.cafe_id, user.id, "CREATE_SESSION", `Session démarrée pour ${customerName} à la place ${selectedSeat}`);
+      addActiveSession(session);
+      addToast({ type: 'success', message: `Session démarrée — Place ${selectedSeat}, ${customerName}` });
+      navigate('/dashboard');
+    } catch (err) {
+      addToast({ type: 'error', message: 'Erreur lors du démarrage' });
     } finally {
-      setIsLoading(false)
+      setIsSaving(false);
     }
-  }
+  };
 
-  const occupiedSeats = activeSessions.map(s => s.seat_number)
+  const totalSeats = settings?.total_seats || 20;
+  const seats = Array.from({ length: totalSeats }, (_, i) => i + 1);
 
   return (
-    <div className="min-h-screen bg-bg pt-14 pb-24">
-      <div className="fixed top-0 left-0 right-0 h-14 bg-bg border-b border-border z-[110] px-4 flex items-center justify-between">
-        <button onClick={() => navigate(-1)} className="p-2 -ml-2 text-text3 hover:text-text"><X className="w-5 h-5" /></button>
-        <h1 className="text-sm font-bold text-text uppercase tracking-widest">Nouvelle session</h1>
-        <div className="w-8" />
-      </div>
+    <div className="bg-bg min-h-screen flex flex-col">
+      <header className="h-[56px] border-b border-border px-4 flex items-center gap-4">
+        <button onClick={() => navigate(-1)} className="text-text2">
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <h1 className="text-[17px] font-bold text-text">Nouvelle session</h1>
+      </header>
 
-      <div className="p-6 space-y-8 max-w-xl mx-auto">
-        {/* CLIENT SECTION */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-8">
+        {/* SECTION 1 — Client */}
         <section className="space-y-4">
-          <label className="text-[11px] font-bold text-text3 uppercase tracking-[0.1em]">Client</label>
+          <h2 className="text-[12px] font-bold text-text2 uppercase tracking-widest">Client</h2>
+
           <div className="space-y-3">
-            <Input
-              placeholder="Nom du client"
-              icon={<User className="w-4 h-4" />}
-              value={customerName}
-              onChange={e => setCustomerName(e.target.value)}
-              className="h-14 text-lg"
-              autoFocus
-            />
-            {recentCustomers.length > 0 && (
-              <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-                {recentCustomers.map(name => (
-                  <button
-                    key={name}
-                    onClick={() => setCustomerName(name)}
-                    className="shrink-0 px-3 py-1.5 bg-surface2 border border-border rounded-full text-xs text-text2 hover:border-accent transition-colors"
-                  >
-                    {name}
-                  </button>
-                ))}
-              </div>
-            )}
-            <Input
-              placeholder="Téléphone (optionnel)"
+            <div className="relative">
+              <input
+                autoFocus
+                type="text"
+                placeholder="Nom du client"
+                value={customerName}
+                onChange={e => setCustomerName(e.target.value)}
+                className="w-full h-[48px] bg-black/30 border border-border rounded-input px-4 text-text text-[16px] focus:border-accent"
+              />
+              {customerName && (
+                <button
+                  onClick={() => setCustomerName('')}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-text3"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            <input
               type="tel"
-              icon={<Phone className="w-4 h-4" />}
+              inputMode="numeric"
+              placeholder="+212 6XX XXX XXX"
               value={customerPhone}
               onChange={e => setCustomerPhone(e.target.value)}
+              className="w-full h-[48px] bg-black/30 border border-border rounded-input px-4 text-text text-[16px] focus:border-accent"
             />
+
+            {recentClients.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-[11px] text-text3 font-bold">Récents:</p>
+                <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+                  {recentClients.map(name => (
+                    <button
+                      key={name}
+                      onClick={() => setCustomerName(name)}
+                      className="shrink-0 px-3 py-1.5 bg-card border border-border rounded-badge text-[12px] text-text2 active:scale-95 transition-all"
+                    >
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </section>
 
-        {/* SEAT GRID */}
+        {/* SECTION 2 — Place */}
         <section className="space-y-4">
-          <label className="text-[11px] font-bold text-text3 uppercase tracking-[0.1em]">Sélectionner une place</label>
-          <div className="grid grid-cols-5 gap-2">
-            {Array.from({ length: cafe?.total_seats || 20 }).map((_, i) => {
-              const seatNum = i + 1
-              const isOccupied = occupiedSeats.includes(seatNum)
-              const isSelected = selectedSeat === seatNum
-              const session = activeSessions.find(s => s.seat_number === seatNum)
+          <h2 className="text-[12px] font-bold text-text2 uppercase tracking-widest">Place</h2>
+          <div className="grid grid-cols-4 gap-3">
+            {seats.map(num => {
+              const isOccupied = occupiedSeats.has(num);
+              const isSelected = selectedSeat === num;
 
               return (
                 <button
-                  key={seatNum}
+                  key={num}
                   disabled={isOccupied}
-                  onClick={() => setSelectedSeat(seatNum)}
-                  className={cn(
-                    "relative aspect-square rounded-card border flex flex-col items-center justify-center transition-all",
-                    isOccupied ? "bg-error/5 border-error/20 text-error/40 cursor-not-allowed" :
-                    isSelected ? "bg-accent-glow border-accent text-accent2 shadow-accent/20 scale-105" :
-                    "bg-surface border-border text-text2 hover:border-text3"
-                  )}
+                  onClick={() => setSelectedSeat(num)}
+                  className={`
+                    w-full aspect-square rounded-full flex flex-col items-center justify-center border transition-all
+                    ${isOccupied ? 'bg-red-dim border-red/30 text-red opacity-50' :
+                      isSelected ? 'bg-accent-dim border-accent text-accent2 ring-4 ring-accent/10' :
+                      'bg-card border-border text-text2'}
+                  `}
                 >
-                  <span className="font-mono text-sm font-black">{seatNum}</span>
-                  {isOccupied && <span className="text-[8px] font-bold truncate px-1">{session?.customer_name[0]}</span>}
+                  <span className={`text-[16px] ${isSelected ? 'font-bold' : 'font-medium'}`}>{num}</span>
+                  {isOccupied && <span className="text-[9px] mt-0.5 opacity-80">Occ.</span>}
                 </button>
-              )
+              );
             })}
           </div>
         </section>
 
-        {/* RATE SECTION */}
+        {/* SECTION 3 — Tarif */}
         <section className="space-y-4">
-          <label className="text-[11px] font-bold text-text3 uppercase tracking-[0.1em]">Tarif</label>
+          <h2 className="text-[12px] font-bold text-text2 uppercase tracking-widest">Tarif</h2>
           <div className="space-y-2">
-            <RateOption
-              selected={rateType === 'standard'}
-              onClick={() => setRateType('standard')}
-              icon={<Clock className="w-5 h-5" />}
-              title="Standard"
-              subtitle={`${cafe?.default_rate.toFixed(2)} DH / heure`}
-            />
-            <RateOption
-              selected={rateType === 'premium'}
-              onClick={() => setRateType('premium')}
-              icon={<Zap className="w-5 h-5 text-accent" />}
-              title="Premium"
-              subtitle={`${cafe?.premium_rate.toFixed(2)} DH / heure`}
-            />
-            <div className="space-y-2">
-              <RateOption
-                selected={rateType === 'custom'}
-                onClick={() => setRateType('custom')}
-                icon={<Sliders className="w-5 h-5" />}
-                title="Personnalisé"
-                subtitle="Définir un tarif unique"
-              />
-              <AnimatePresence>
-                {rateType === 'custom' && (
-                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                    <Input type="number" step="0.5" value={customRate} onChange={e => setCustomRate(parseFloat(e.target.value))} icon={<span className="text-xs font-bold">DH</span>} className="pl-8" />
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+            {[
+              { id: 'standard', label: 'Standard', sub: `${settings?.default_rate || 2} DH / heure`, icon: '⏱️' },
+              { id: 'premium', label: 'Premium', sub: `${settings?.premium_rate || 3} DH / heure`, icon: '⭐' },
+              { id: 'custom', label: 'Personnalisé', sub: 'Saisir un tarif', icon: '✏️' },
+            ].map(type => (
+              <button
+                key={type.id}
+                onClick={() => setRateType(type.id as any)}
+                className={`
+                  w-full p-4 rounded-card border flex items-center justify-between text-left transition-all
+                  ${rateType === type.id ? 'bg-accent-dim border-accent' : 'bg-card border-border'}
+                `}
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-xl">{type.icon}</span>
+                  <div>
+                    <p className={`text-[14px] font-bold ${rateType === type.id ? 'text-accent2' : 'text-text'}`}>
+                      {type.label}
+                    </p>
+                    <p className="text-[12px] text-text3">{type.sub}</p>
+                  </div>
+                </div>
+                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${rateType === type.id ? 'border-accent' : 'border-border2'}`}>
+                  {rateType === type.id && <div className="w-2.5 h-2.5 bg-accent rounded-full" />}
+                </div>
+              </button>
+            ))}
+
+            {rateType === 'custom' && (
+              <div className="relative mt-2">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  placeholder="DH/heure"
+                  value={customRate || ''}
+                  onChange={e => setCustomRate(parseFloat(e.target.value) || 0)}
+                  className="w-full h-12 bg-black/30 border border-accent/30 rounded-input px-4 text-text font-mono focus:border-accent"
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-text3 font-mono">DH/h</span>
+              </div>
+            )}
           </div>
         </section>
 
-        {/* NOTE SECTION */}
-        <section className="space-y-2">
-          <button
-            onClick={() => setIsNoteOpen(!isNoteOpen)}
-            className="flex items-center gap-2 text-text3 hover:text-text2 transition-colors py-2"
-          >
-            <MessageSquare className="w-4 h-4" />
-            <span className="text-sm font-medium">Ajouter une note</span>
-            <ChevronDown className={cn("w-4 h-4 transition-transform", isNoteOpen && "rotate-180")} />
-          </button>
-          <AnimatePresence>
-            {isNoteOpen && (
-              <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                <textarea
-                  value={notes}
-                  onChange={e => setNotes(e.target.value)}
-                  placeholder="Note interne..."
-                  className="w-full bg-black/25 border border-border rounded-btn p-3 text-sm text-text outline-none focus:border-accent h-24"
-                />
-              </motion.div>
-            )}
-          </AnimatePresence>
+        <section className="space-y-4">
+          <h2 className="text-[12px] font-bold text-text2 uppercase tracking-widest">Note (optionnel)</h2>
+          <textarea
+            placeholder="Note interne (optionnel)"
+            rows={3}
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            className="w-full bg-black/20 border border-border rounded-input p-3 text-text placeholder:text-text3 text-[14px] focus:border-accent"
+          />
         </section>
-      </div>
 
-      {/* PREVIEW & ACTION */}
-      <AnimatePresence>
         {customerName && selectedSeat && (
-          <motion.div
-            initial={{ y: 100 }}
-            animate={{ y: 0 }}
-            exit={{ y: 100 }}
-            className="fixed bottom-0 left-0 right-0 p-4 bg-bg border-t border-border z-[120]"
-          >
-            <div className="max-w-xl mx-auto space-y-4">
-              <div className="bg-surface2 border border-accent-border rounded-card p-3 flex justify-between items-center text-[11px] text-text3 uppercase tracking-wider">
-                <div className="flex gap-4">
-                  <p>Client: <span className="text-text font-bold">{customerName}</span></p>
-                  <p>Place: <span className="text-text font-bold">{selectedSeat}</span></p>
-                </div>
-                <p>Début: <span className="text-text font-bold">{new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span></p>
-              </div>
-              <Button onClick={handleStartSession} className="w-full h-14 text-lg" isLoading={isLoading} leftIcon={<Play className="w-5 h-5 fill-current" />}>
-                Démarrer la session
-              </Button>
+          <div className="bg-card2 border border-border rounded-card p-4 space-y-2 animate-in fade-in slide-in-from-bottom-2">
+            <h3 className="text-[11px] font-bold text-accent2 uppercase">Résumé de départ</h3>
+            <div className="flex justify-between text-[13px]">
+              <span className="text-text3">Client:</span>
+              <span className="text-text font-bold">{customerName}</span>
             </div>
-          </motion.div>
+            <div className="flex justify-between text-[13px]">
+              <span className="text-text3">Place:</span>
+              <span className="text-text font-bold">{selectedSeat}</span>
+            </div>
+            <div className="flex justify-between text-[13px]">
+              <span className="text-text3">Début:</span>
+              <span className="text-text font-mono font-bold">{formatTime(new Date())}</span>
+            </div>
+          </div>
         )}
-      </AnimatePresence>
-    </div>
-  )
-}
+      </div>
 
-const RateOption = ({ selected, onClick, icon, title, subtitle }: any) => (
-  <button
-    onClick={onClick}
-    className={cn(
-      "w-full p-4 flex items-center justify-between border rounded-card transition-all",
-      selected ? "bg-accent-glow border-accent shadow-accent/10" : "bg-surface border-border hover:border-text3"
-    )}
-  >
-    <div className="flex items-center gap-4">
-      <div className={cn("p-2 rounded-btn", selected ? "bg-accent text-white" : "bg-surface2 text-text3")}>
-        {icon}
-      </div>
-      <div className="text-left">
-        <p className="text-sm font-bold text-text">{title}</p>
-        <p className="text-xs text-text3">{subtitle}</p>
+      <div className="p-4 safe-bottom">
+        <button
+          disabled={!customerName || !selectedSeat || isSaving}
+          onClick={handleStart}
+          className="w-full h-[52px] bg-gradient-to-r from-accent to-accent2 text-white font-bold rounded-button shadow-main disabled:opacity-50 flex items-center justify-center gap-2"
+        >
+          {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : '▶ Démarrer la session'}
+        </button>
       </div>
     </div>
-    <div className={cn(
-      "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors",
-      selected ? "border-accent bg-accent" : "border-border"
-    )}>
-      {selected && <div className="w-2 h-2 bg-white rounded-full" />}
-    </div>
-  </button>
-)
+  );
+};
