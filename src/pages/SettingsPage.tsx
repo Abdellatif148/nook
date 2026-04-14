@@ -1,95 +1,271 @@
-// @ts-nocheck
-import * as React from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { useNavigate } from 'react-router-dom'
-import { Store, ShoppingBag, Users, Key, Globe, LogOut, ChevronDown, Copy, Plus, Trash2 } from 'lucide-react'
-import { supabase } from '../lib/supabase'
-import { useAuthStore } from '../stores/authStore'
-import { useUIStore } from '../stores/uiStore'
-import { useTranslation } from '../i18n'
-import { Button } from '../components/ui/Button'
-import { Input } from '../components/ui/Input'
-import { BottomSheet } from '../components/ui/BottomSheet'
-import type { Product } from '../types'
-import { cn } from '../utils/cn'
+import * as React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { LogOut, Save, Plus, Trash2, RefreshCw } from 'lucide-react';
+import { useAuthStore } from '../stores/authStore';
+import { useUIStore } from '../stores/uiStore';
+import { saveSettings } from '../db/settings';
+import { addToSyncQueue } from '../db/syncQueue';
+import { getProducts, saveProduct, deleteProduct } from '../db/products';
+import { formatDH } from '../utils/formatters';
+import { BottomSheet } from '../components/ui/BottomSheet';
+import type { CafeSettings, Product } from '../types';
 
 export const SettingsPage: React.FC = () => {
-  const navigate = useNavigate()
-  const { cafe, type, logout, setCafe } = useAuthStore()
-  const { addToast } = useUIStore()
-  const { language, setLanguage } = useTranslation()
+  const navigate = useNavigate();
+  const { user, settings, logout, updateSettings } = useAuthStore();
+  const { addToast } = useUIStore();
 
-  const [activeSection, setActiveSection] = React.useState<string | null>(null)
-  const [products, setProducts] = React.useState<Product[]>([])
-  const [showProductSheet, setShowProductSheet] = React.useState(false)
+  const [formSettings, setFormSettings] = React.useState<CafeSettings | null>(settings);
+  const [products, setProducts] = React.useState<Product[]>([]);
+  const [isAddProductOpen, setIsAddProductOpen] = React.useState(false);
+  const [newProdName, setNewProdName] = React.useState('');
+  const [newProdPrice, setNewProdPrice] = React.useState(0);
+  const [newProdCat, setNewProdCat] = React.useState<'boisson' | 'nourriture' | 'autre'>('boisson');
 
-  const [cafeName, setCafeName] = React.useState(cafe?.name || '')
-  const [cafeAddress, setCafeAddress] = React.useState(cafe?.address || '')
+  React.useEffect(() => {
+    if (user?.cafe_id) {
+      fetchProducts(user.cafe_id);
+    }
+  }, [user]);
 
-  const [pName, setPName] = React.useState('')
-  const [pPrice, setPPrice] = React.useState('')
-  const [pCategory, setPCategory] = React.useState<'boisson' | 'nourriture' | 'autre'>('autre')
+  const fetchProducts = async (cafeId: string) => {
+    const data = await getProducts(cafeId);
+    setProducts(data);
+  };
 
-  React.useEffect(() => { if (type === 'staff') navigate('/dashboard') }, [type])
-
-  const fetchProducts = async () => {
-    if (!cafe?.id) return
-    const { data } = await supabase.from('products').select('*').eq('cafe_id', cafe.id)
-    setProducts(data as Product[] || [])
-  }
-
-  React.useEffect(() => { fetchProducts() }, [cafe?.id])
-
-  const handleUpdateCafe = async () => {
-    if (!cafe) return
-    const { data, error } = await supabase.from('cafes').update({ name: cafeName, address: cafeAddress } as any).eq('id', cafe.id).select().single()
-    if (!error) { setCafe(data as any); addToast({ type: 'success', message: 'Mis à jour' }) }
-  }
+  const handleSaveSettings = async () => {
+    if (!formSettings) return;
+    try {
+      await saveSettings(formSettings);
+      await addToSyncQueue({
+        id: crypto.randomUUID(),
+        type: 'update_settings',
+        payload: formSettings,
+        retry_count: 0,
+        created_at: new Date().toISOString()
+      });
+      updateSettings(formSettings);
+      addToast({ type: 'success', message: 'Paramètres enregistrés' });
+    } catch (err) {
+      addToast({ type: 'error', message: 'Erreur lors de l\'enregistrement' });
+    }
+  };
 
   const handleAddProduct = async () => {
-    if (!cafe || !pName || !pPrice) return
-    const { error } = await supabase.from('products').insert({ cafe_id: cafe.id, name: pName, price: parseFloat(pPrice), category: pCategory } as any)
-    if (!error) { addToast({ type: 'success', message: 'Ajouté' }); setShowProductSheet(false); fetchProducts(); setPName(''); setPPrice('') }
-  }
+    if (!user || !newProdName) return;
 
-  const handleDeleteProduct = async (id: string) => { if (await supabase.from('products').delete().eq('id', id)) fetchProducts() }
+    const prod: Product = {
+      id: crypto.randomUUID(),
+      cafe_id: user.cafe_id,
+      name: newProdName,
+      price: newProdPrice,
+      category: newProdCat,
+      active: true
+    };
+
+    try {
+      await saveProduct(prod);
+      setProducts([...products, prod]);
+      addToast({ type: 'success', message: 'Produit ajouté' });
+      setIsAddProductOpen(false);
+      setNewProdName('');
+      setNewProdPrice(0);
+    } catch (err) {
+      addToast({ type: 'error', message: 'Erreur' });
+    }
+  };
+
+  const handleDeleteProduct = async (id: string) => {
+    try {
+      await deleteProduct(id);
+      setProducts(products.filter(p => p.id !== id));
+      addToast({ type: 'success', message: 'Produit supprimé' });
+    } catch (err) {
+      addToast({ type: 'error', message: 'Erreur' });
+    }
+  };
 
   return (
-    <div className="pt-20 pb-24 px-4 space-y-4 max-w-2xl mx-auto">
-      <h1 className="text-xl font-bold text-text mb-6">Réglages</h1>
-      <AccordionItem icon={<Store className="w-5 h-5" />} title="Mon café" isOpen={activeSection === 'cafe'} onClick={() => setActiveSection(activeSection === 'cafe' ? null : 'cafe')}>
-        <div className="space-y-4 pt-2"><Input label="Nom" value={cafeName} onChange={e => setCafeName(e.target.value)} /><Input label="Adresse" value={cafeAddress} onChange={e => setCafeAddress(e.target.value)} /><Button onClick={handleUpdateCafe} className="w-full">Enregistrer</Button></div>
-      </AccordionItem>
-      <AccordionItem icon={<ShoppingBag className="w-5 h-5" />} title="Produits" isOpen={activeSection === 'products'} onClick={() => setActiveSection(activeSection === 'products' ? null : 'products')}>
-        <div className="space-y-4 pt-2">
-          {products.map(p => (<div key={p.id} className="p-3 bg-surface2 border border-border rounded-btn flex items-center justify-between"><div><p className="text-sm font-bold">{p.name}</p><p className="text-[10px] text-text3">{p.price.toFixed(2)} DH</p></div><button onClick={() => handleDeleteProduct(p.id)} className="text-text3 hover:text-error p-2"><Trash2 className="w-4 h-4" /></button></div>))}
-          <Button variant="ghost" className="w-full h-12 border-dashed" leftIcon={<Plus className="w-4 h-4" />} onClick={() => setShowProductSheet(true)}>Ajouter</Button>
+    <div className="p-4 space-y-8 pb-24">
+      <h1 className="text-[20px] font-bold text-text">Paramètres</h1>
+
+      <section className="space-y-4">
+        <h2 className="text-[12px] font-bold text-text2 uppercase tracking-widest">Mon Café</h2>
+        <div className="bg-card border border-border rounded-card p-4 space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-[11px] text-text3 font-bold uppercase">Nom du café</label>
+            <input
+              value={formSettings?.cafe_name || ''}
+              onChange={e => setFormSettings(prev => prev ? {...prev, cafe_name: e.target.value} : null)}
+              className="w-full bg-black/20 border border-border rounded-input px-3 py-2 text-text"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-[11px] text-text3 font-bold uppercase">Total places</label>
+              <input
+                type="number"
+                value={formSettings?.total_seats || 20}
+                onChange={e => setFormSettings(prev => prev ? {...prev, total_seats: parseInt(e.target.value) || 0} : null)}
+                className="w-full bg-black/20 border border-border rounded-input px-3 py-2 text-text"
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                onClick={handleSaveSettings}
+                className="w-full h-[40px] bg-accent text-white font-bold rounded-button flex items-center justify-center gap-2 text-[13px]"
+              >
+                <Save className="w-4 h-4" /> Sauvegarder
+              </button>
+            </div>
+          </div>
         </div>
-      </AccordionItem>
-      <AccordionItem icon={<Users className="w-5 h-5" />} title="Mon équipe" onClick={() => navigate('/settings/staff')} />
-      <AccordionItem icon={<Key className="w-5 h-5" />} title="Invitation" isOpen={activeSection === 'code'} onClick={() => setActiveSection(activeSection === 'code' ? null : 'code')}>
-        <div className="space-y-4 pt-4 text-center"><div className="p-4 bg-surface2 border border-border rounded-card font-mono font-bold tracking-widest text-accent text-xl">{cafe?.invite_code}</div><Button variant="ghost" className="w-full" leftIcon={<Copy className="w-4 h-4" />} onClick={() => { navigator.clipboard.writeText(cafe?.invite_code || ''); addToast({ type: 'success', message: 'Copié' }) }}>Copier</Button></div>
-      </AccordionItem>
-      <AccordionItem icon={<Globe className="w-5 h-5" />} title="Langue" isOpen={activeSection === 'lang'} onClick={() => setActiveSection(activeSection === 'lang' ? null : 'lang')}>
-        <div className="grid grid-cols-2 gap-3 pt-2">
-          <button onClick={() => setLanguage('fr')} className={cn("p-4 border rounded-card transition-all", language === 'fr' ? "bg-accent-glow border-accent text-accent2" : "bg-surface border-border text-text3")}>Français</button>
-          <button onClick={() => setLanguage('en')} className={cn("p-4 border rounded-card transition-all", language === 'en' ? "bg-accent-glow border-accent text-accent2" : "bg-surface border-border text-text3")}>English</button>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-[12px] font-bold text-text2 uppercase tracking-widest">Tarifs par défaut</h2>
+        <div className="bg-card border border-border rounded-card p-4 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-[11px] text-text3 font-bold uppercase">Standard (DH/h)</label>
+              <input
+                type="number"
+                value={formSettings?.default_rate || 2}
+                onChange={e => setFormSettings(prev => prev ? {...prev, default_rate: parseFloat(e.target.value) || 0} : null)}
+                className="w-full bg-black/20 border border-border rounded-input px-3 py-2 text-text font-mono"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-[11px] text-text3 font-bold uppercase">Premium (DH/h)</label>
+              <input
+                type="number"
+                value={formSettings?.premium_rate || 3}
+                onChange={e => setFormSettings(prev => prev ? {...prev, premium_rate: parseFloat(e.target.value) || 0} : null)}
+                className="w-full bg-black/20 border border-border rounded-input px-3 py-2 text-text font-mono"
+              />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[11px] text-text3 font-bold uppercase">Incrément de facturation</label>
+            <select
+              value={formSettings?.billing_increment || 'minute'}
+              onChange={e => setFormSettings(prev => prev ? {...prev, billing_increment: e.target.value as any} : null)}
+              className="w-full bg-black/20 border border-border rounded-input px-3 py-2 text-text"
+            >
+              <option value="minute">À la minute</option>
+              <option value="15min">15 minutes</option>
+              <option value="30min">30 minutes</option>
+              <option value="hour">À l'heure</option>
+            </select>
+          </div>
         </div>
-      </AccordionItem>
-      <button onClick={async () => { await supabase.auth.signOut(); logout(); navigate('/login') }} className="w-full p-4 flex items-center gap-3 text-error bg-error-dim border border-error/20 rounded-card font-bold text-sm mt-8 active:scale-95 transition-transform"><LogOut className="w-5 h-5" />Déconnexion</button>
-      <BottomSheet isOpen={showProductSheet} onClose={() => setShowProductSheet(false)} title="Nouveau produit">
-        <div className="space-y-4 pt-2"><Input label="Nom" value={pName} onChange={e => setPName(e.target.value)} /><Input label="Prix" type="number" value={pPrice} onChange={e => setPPrice(e.target.value)} /><div className="flex gap-2">{['boisson', 'nourriture', 'autre'].map(c => (<button key={c} onClick={() => setPCategory(c as any)} className={cn("flex-1 py-2 rounded-btn border text-[10px] font-bold uppercase", pCategory === c ? "bg-accent text-white border-accent" : "bg-surface2 border-border text-text3")}>{c}</button>))}</div><Button onClick={handleAddProduct} className="w-full h-14">Ajouter</Button></div>
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-[12px] font-bold text-text2 uppercase tracking-widest">Produits</h2>
+          <button
+            onClick={() => setIsAddProductOpen(true)}
+            className="text-[11px] font-bold text-accent2 flex items-center gap-1"
+          >
+            <Plus className="w-3 h-3" /> Ajouter
+          </button>
+        </div>
+        <div className="bg-card border border-border rounded-card overflow-hidden">
+          {products.map((p, idx) => (
+            <div key={p.id} className={`p-4 flex items-center justify-between ${idx !== products.length - 1 ? 'border-b border-border' : ''}`}>
+              <div className="space-y-0.5">
+                <p className="text-[14px] font-bold text-text">{p.name}</p>
+                <p className="text-[11px] text-text3 uppercase">{p.category}</p>
+              </div>
+              <div className="flex items-center gap-4">
+                <span className="text-[14px] font-mono font-bold text-accent2">{formatDH(p.price)}</span>
+                <button onClick={() => handleDeleteProduct(p.id)} className="text-red/50 hover:text-red">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+          {products.length === 0 && (
+            <p className="p-8 text-center text-text3 text-[13px]">Aucun produit configuré</p>
+          )}
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-[12px] font-bold text-text2 uppercase tracking-widest">Section V2 (Bientôt)</h2><div className="bg-card border border-border rounded-card p-4 text-[13px] text-text3 italic">Détection automatique des places disponible en V2 avec capteurs.</div></section><section className="space-y-4"><h2 className="text-[12px] font-bold text-text2 uppercase tracking-widest">Synchronisation</h2>
+        <div className="bg-card border border-border rounded-card p-4 flex items-center justify-between">
+          <div className="space-y-0.5">
+            <p className="text-[14px] font-bold text-text">Dernière synchro</p>
+            <p className="text-[11px] text-text3">Il y a 2 minutes</p>
+          </div>
+          <button className="p-2 bg-surface border border-border rounded-button text-accent2">
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </section>
+
+      <section className="pt-4">
+        <button
+          onClick={() => {
+            if (confirm('Êtes-vous sûr? Les données non synchronisées seront conservées.')) {
+              logout();
+              navigate('/login');
+            }
+          }}
+          className="w-full h-12 bg-red-dim border border-red/20 text-red font-bold rounded-button flex items-center justify-center gap-2"
+        >
+          <LogOut className="w-4 h-4" /> Se déconnecter
+        </button>
+      </section>
+
+      <BottomSheet isOpen={isAddProductOpen} onClose={() => setIsAddProductOpen(false)} title="Ajouter un produit">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-[12px] font-bold text-text2 uppercase">Nom du produit</label>
+            <input
+              value={newProdName}
+              onChange={e => setNewProdName(e.target.value)}
+              placeholder="Ex: Café Noir"
+              className="w-full h-12 bg-black/30 border border-border rounded-input px-4 text-text"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[12px] font-bold text-text2 uppercase">Prix (DH)</label>
+            <div className="relative">
+              <input
+                type="number"
+                value={newProdPrice || ''}
+                onChange={e => setNewProdPrice(parseFloat(e.target.value) || 0)}
+                placeholder="0.00"
+                className="w-full h-12 bg-black/30 border border-border rounded-input px-4 text-text font-mono"
+              />
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-text3 font-mono">DH</span>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[12px] font-bold text-text2 uppercase">Catégorie</label>
+            <div className="grid grid-cols-3 gap-2">
+              {['boisson', 'nourriture', 'autre'].map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setNewProdCat(cat as any)}
+                  className={`py-2 rounded-badge border text-[12px] font-bold capitalize transition-all ${newProdCat === cat ? 'bg-accent border-accent text-white' : 'bg-surface border-border text-text2'}`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button
+            disabled={!newProdName}
+            onClick={handleAddProduct}
+            className="w-full h-[52px] bg-accent text-white font-bold rounded-button mt-4"
+          >
+            Ajouter le produit
+          </button>
+        </div>
       </BottomSheet>
     </div>
-  )
-}
-
-const AccordionItem = ({ icon, title, children, isOpen, onClick }: any) => (
-  <div className="bg-surface border border-border rounded-card overflow-hidden">
-    <button onClick={onClick} className="w-full p-4 flex items-center justify-between hover:bg-white/5">
-      <div className="flex items-center gap-3 text-text"><div className="text-text2">{icon}</div><span className="text-sm font-bold">{title}</span></div>
-      {children && <ChevronDown className={cn("w-4 h-4 text-text3 transition-transform", isOpen && "rotate-180")} />}
-    </button>
-    <AnimatePresence>{isOpen && <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden"><div className="p-4 pt-0 border-t border-border/30">{children}</div></motion.div>}</AnimatePresence>
-  </div>
-)
+  );
+};
